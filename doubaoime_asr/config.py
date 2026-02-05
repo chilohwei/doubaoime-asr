@@ -1,11 +1,33 @@
+import base64
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import time
 from typing import Optional, Union
 from pydantic import BaseModel
 
 from .constants import WEBSOCKET_URL, USER_AGENT, AID
 from .device import DeviceCredentials, register_device, get_asr_token
+from .sami import get_sami_token
+
+
+def _jwt_is_expired(token: str, margin: int = 60) -> bool:
+    """
+    检查 JWT token 是否已过期（提前 margin 秒视为过期）
+    """
+    try:
+        payload_b64 = token.split(".")[1]
+        # JWT base64url 需要补齐 padding
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        exp = payload.get("exp")
+        if exp is None:
+            return False
+        return time.time() >= exp - margin
+    except (IndexError, ValueError, json.JSONDecodeError):
+        return False
 
 
 class _AudioInfo(BaseModel):
@@ -90,6 +112,7 @@ class ASRConfig:
     # 内部状态
     _credentials: Optional[DeviceCredentials] = field(default=None, repr=None)
     _initialized: bool = field(default=False, repr=False)
+    _wave_client: Optional[object] = field(default=None, repr=False)
 
     def _load_credentials_from_file(self) -> Optional[DeviceCredentials]:
         """
@@ -216,3 +239,65 @@ class ASRConfig:
     def get_token(self) -> str:
         self.ensure_credentials()
         return self.token
+
+    def _on_wave_session_update(self, session) -> None:
+        """
+        Wave 会话更新时的回调，将新会话同步到凭据缓存
+        """
+        if self._credentials:
+            self._credentials.wave_session = session.to_dict()
+            self._save_credentials_to_file(self._credentials)
+
+    def get_wave_client(self):
+        """
+        获取 WaveClient 实例（懒加载，自动管理握手）
+
+        会从凭据缓存中恢复未过期的会话，避免重复握手。
+        会话刷新时自动同步回凭据文件。
+        """
+        from .wave_client import WaveClient, WaveSession
+
+        self.ensure_credentials()
+        if self._wave_client is None:
+            # 尝试从缓存恢复会话
+            cached_session = None
+            if self._credentials and self._credentials.wave_session:
+                try:
+                    session = WaveSession.from_dict(self._credentials.wave_session)
+                    if not session.is_expired():
+                        cached_session = session
+                except (KeyError, ValueError):
+                    pass
+
+            self._wave_client = WaveClient(
+                self.device_id,
+                self.aid,
+                session=cached_session,
+                on_session_update=self._on_wave_session_update,
+            )
+        return self._wave_client
+
+    def get_sami_token(self) -> str:
+        """
+        获取 SAMI token（用于 NER 等服务）
+
+        优先从缓存的凭据中获取未过期的 token，否则请求新的并缓存。
+        """
+        self.ensure_credentials()
+
+        # 优先使用已缓存且未过期的 sami_token
+        if (self._credentials
+                and self._credentials.sami_token
+                and not _jwt_is_expired(self._credentials.sami_token)):
+            return self._credentials.sami_token
+
+        # 请求新的 sami_token
+        cdid = self._credentials.cdid if self._credentials else None
+        sami_token = get_sami_token(cdid)
+
+        # 缓存到凭据中
+        if self._credentials:
+            self._credentials.sami_token = sami_token
+            self._save_credentials_to_file(self._credentials)
+
+        return sami_token

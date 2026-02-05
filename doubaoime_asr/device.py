@@ -29,6 +29,14 @@ class DeviceCredentials(BaseModel):
     """
     用于 ASR 的 token
     """
+    sami_token: Optional[str] = None
+    """
+    用于 NER 等 SAMI 服务的 token
+    """
+    wave_session: Optional[dict] = None
+    """
+    Wave 加密会话缓存（序列化后的 WaveSession）
+    """
 
 
 class DeviceRegisterHeaderField(BaseModel):

@@ -14,6 +14,7 @@ from .asr import (
     transcribe_realtime,
 )
 from .config import ASRConfig
+from .ner import NerResponse, NerResult, NerWord, ner
 
 __all__ = [
     "DoubaoASR",
@@ -30,4 +31,8 @@ __all__ = [
     "transcribe",
     "transcribe_stream",
     "transcribe_realtime",
+    "NerResponse",
+    "NerResult",
+    "NerWord",
+    "ner",
 ]
